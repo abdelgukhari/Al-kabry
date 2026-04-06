@@ -72,7 +72,7 @@
                         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
                         </svg>
-                        <span>Libya</span>
+                        <span>UAE</span>
                     </div>
                 </div>
 
@@ -127,19 +127,30 @@
                     </div>
                     <!-- Dropdown Menu -->
                     <div class="hidden group-hover:block absolute right-0 top-full bg-white text-gray-900 shadow-lg rounded w-48 py-2 z-50">
+                        <a href="{% url 'accounts:dashboard' %}" class="block px-4 py-2 hover:bg-gray-100">
+                            <i class="text-sm">Your Dashboard</i>
+                        </a>
                         <a href="{% url 'accounts:profile' %}" class="block px-4 py-2 hover:bg-gray-100">
                             <i class="text-sm">Your Profile</i>
                         </a>
                         <a href="{% url 'accounts:order_history' %}" class="block px-4 py-2 hover:bg-gray-100">
                             <i class="text-sm">Your Orders</i>
                         </a>
+                        {% if user.is_staff %}
                         <div class="border-t border-gray-200 my-2"></div>
-                        <a href="{% url 'analytics:dashboard' %}" class="block px-4 py-2 hover:bg-gray-100">
-                            <i class="text-sm">Analytics</i>
+                        <a href="{% url 'accounts:admin_dashboard' %}" class="block px-4 py-2 hover:bg-gray-100 text-amazon-blue font-semibold">
+                            <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                            </svg>
+                            Admin Dashboard
                         </a>
                         <a href="{% url 'analytics:compare' %}" class="block px-4 py-2 hover:bg-gray-100">
                             <i class="text-sm">Compare Algorithms</i>
                         </a>
+                        <a href="{% url 'analytics:generate_report' %}" class="block px-4 py-2 hover:bg-gray-100">
+                            <i class="text-sm">Generate Report</i>
+                        </a>
+                        {% endif %}
                         <div class="border-t border-gray-200 my-2"></div>
                         <a href="{% url 'accounts:logout' %}" class="block px-4 py-2 hover:bg-gray-100 text-red-600">
                             <i class="text-sm">Sign Out</i>
@@ -190,8 +201,8 @@
                     </button>
                     <a href="{% url 'products:home' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Home</a>
                     <a href="{% url 'products:list' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Products</a>
-                    {% if user.is_authenticated %}
-                    <a href="{% url 'analytics:dashboard' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Analytics</a>
+                    {% if user.is_staff %}
+                    <a href="{% url 'accounts:admin_dashboard' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap font-semibold text-amazon-orange">Admin</a>
                     <a href="{% url 'analytics:compare' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Compare</a>
                     {% endif %}
                     {% if categories %}

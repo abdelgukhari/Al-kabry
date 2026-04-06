@@ -456,6 +456,126 @@ class RecommendationService:
         
         return scores
     
+    def get_similar_products(self, product, algorithm='item_based_cf', limit=6):
+        """Get products similar to a given product."""
+        if algorithm == 'content_based':
+            return self._similar_products_content_based(product, limit=limit)
+        elif algorithm == 'item_based_cf':
+            return self._similar_products_item_based(product, limit=limit)
+        elif algorithm == 'svd':
+            return self._similar_products_svd(product, limit=limit)
+        else:
+            # Default fallback to item-based CF
+            return self._similar_products_item_based(product, limit=limit)
+
+    def _similar_products_content_based(self, product, limit=6):
+        """Find similar products using content-based filtering (TF-IDF features)."""
+        features_df = self._get_product_features()
+        if features_df.empty or self._tfidf_matrix is None or product.id not in features_df['product_id'].values:
+            return list(Product.objects.filter(
+                is_available=True, is_active=True
+            ).exclude(id=product.id).order_by('-views_count')[:limit])
+
+        product_idx = features_df[features_df['product_id'] == product.id].index[0]
+        product_vector = self._tfidf_matrix[product_idx]
+
+        similarities = cosine_similarity(product_vector, self._tfidf_matrix).flatten()
+
+        # Exclude the product itself
+        for i, pid in enumerate(features_df['product_id'].values):
+            if pid == product.id:
+                similarities[i] = 0
+
+        top_indices = similarities.argsort()[-limit:][::-1]
+        similar_ids = features_df.iloc[top_indices]['product_id'].values.tolist()
+
+        return list(Product.objects.filter(id__in=similar_ids))
+
+    def _similar_products_item_based(self, product, limit=6):
+        """Find similar products using item-based collaborative filtering."""
+        matrix = self._get_user_item_matrix()
+        if matrix.empty or product.id not in matrix.columns:
+            return list(Product.objects.filter(
+                is_available=True, is_active=True
+            ).exclude(id=product.id).order_by('-views_count')[:limit])
+
+        # Build item similarity if not already done
+        if self._item_similarity_matrix is None:
+            item_matrix = matrix.T
+            if len(item_matrix) > 200:
+                item_matrix = item_matrix.sample(200, random_state=42)
+
+            self._item_similarity_matrix = pd.DataFrame(
+                cosine_similarity(item_matrix),
+                index=item_matrix.index,
+                columns=item_matrix.index
+            )
+
+        if product.id not in self._item_similarity_matrix.columns:
+            return list(Product.objects.filter(
+                is_available=True, is_active=True
+            ).exclude(id=product.id).order_by('-views_count')[:limit])
+
+        similarities = self._item_similarity_matrix[product.id]
+        similarities = similarities.drop(product.id, errors='ignore')
+
+        top_similar = similarities.nlargest(limit)
+        similar_ids = top_similar.index.tolist()
+
+        return list(Product.objects.filter(id__in=similar_ids))
+
+    def _similar_products_svd(self, product, limit=6):
+        """Find similar products using SVD latent factors."""
+        matrix = self._get_user_item_matrix()
+        if matrix.empty or product.id not in matrix.columns:
+            return list(Product.objects.filter(
+                is_available=True, is_active=True
+            ).exclude(id=product.id).order_by('-views_count')[:limit])
+
+        n_components = min(10, min(matrix.shape) - 1)
+        n_components = max(n_components, 3)
+
+        svd = TruncatedSVD(n_components=n_components, random_state=42, n_iter=10)
+        item_factors = svd.fit_transform(matrix.T)
+
+        product_idx = list(matrix.columns).index(product.id)
+        product_vector = item_factors[product_idx:product_idx+1]
+
+        similarities = cosine_similarity(product_vector, item_factors).flatten()
+
+        # Exclude the product itself
+        for i, pid in enumerate(matrix.columns):
+            if pid == product.id:
+                similarities[i] = 0
+
+        top_indices = similarities.argsort()[-limit:][::-1]
+        similar_ids = [matrix.columns[i] for i in top_indices]
+
+        return list(Product.objects.filter(id__in=similar_ids))
+
+    def compare_all_algorithms(self, user):
+        """
+        Compare all algorithms side by side for a user.
+        Returns recommendations from each algorithm for comparison.
+        """
+        results = {}
+
+        for algorithm in self.ALGORITHMS:
+            try:
+                recs = self.get_recommendations_for_user(user, algorithm=algorithm, limit=8)
+                results[algorithm] = {
+                    'recommendations': recs,
+                    'count': len(recs),
+                }
+            except Exception as e:
+                results[algorithm] = {
+                    'recommendations': [],
+                    'count': 0,
+                    'error': str(e),
+                }
+
+        return results
+
     # =========================================================================
     # EVALUATION (Train/Test split for accurate measurement)
     # =========================================================================

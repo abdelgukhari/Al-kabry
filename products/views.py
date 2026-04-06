@@ -28,11 +28,11 @@ def home_view(request):
     featured_products = Product.objects.filter(
         is_featured=True, is_available=True, is_active=True
     )[:8]
-    
+
     # Get recommendations for user
     recommendation_service = RecommendationService()
     recommended_products = []
-    
+
     if request.user.is_authenticated:
         recommended_products = recommendation_service.get_recommendations_for_user(
             request.user, algorithm='hybrid', limit=8
@@ -42,12 +42,12 @@ def home_view(request):
         recommended_products = Product.objects.filter(
             is_available=True, is_active=True
         ).order_by('-views_count', '-purchases_count')[:8]
-    
+
     # Latest products
     latest_products = Product.objects.filter(
         is_available=True, is_active=True
     ).order_by('-created_at')[:8]
-    
+
     context = {
         'featured_products': featured_products,
         'recommended_products': recommended_products,
