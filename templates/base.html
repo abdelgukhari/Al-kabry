@@ -150,6 +150,9 @@
                         <a href="{% url 'analytics:generate_report' %}" class="block px-4 py-2 hover:bg-gray-100">
                             <i class="text-sm">Generate Report</i>
                         </a>
+                        <a href="{% url 'products:manage' %}" class="block px-4 py-2 hover:bg-gray-100">
+                            <i class="text-sm">Manage Products</i>
+                        </a>
                         {% endif %}
                         <div class="border-t border-gray-200 my-2"></div>
                         <a href="{% url 'accounts:logout' %}" class="block px-4 py-2 hover:bg-gray-100 text-red-600">
@@ -203,6 +206,7 @@
                     <a href="{% url 'products:list' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Products</a>
                     {% if user.is_staff %}
                     <a href="{% url 'accounts:admin_dashboard' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap font-semibold text-amazon-orange">Admin</a>
+                    <a href="{% url 'products:manage' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Manage Products</a>
                     <a href="{% url 'analytics:compare' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Compare</a>
                     {% endif %}
                     {% if categories %}

@@ -1,8 +1,9 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Q, Avg
 from django.contrib import messages
-from .models import Product, Category, Tag, Review
-from .forms import ReviewForm
+from django.contrib.admin.views.decorators import staff_member_required
+from .models import Product, Category, Tag, Review, ProductImage
+from .forms import ReviewForm, ProductForm, ProductImageForm
 from recommendations.services import RecommendationService
 from cart.cart import CartHandler
 import django_filters
@@ -235,3 +236,60 @@ def _paginate(queryset, page_number, per_page):
     from django.core.paginator import Paginator
     paginator = Paginator(queryset, per_page)
     return paginator.get_page(page_number)
+
+
+@staff_member_required
+def product_manage_view(request):
+    products = Product.objects.select_related('category').order_by('-updated_at')
+    query = request.GET.get('q', '')
+    if query:
+        products = products.filter(
+            Q(name__icontains=query) | Q(sku__icontains=query) | Q(brand__icontains=query)
+        )
+    page_obj = _paginate(products, request.GET.get('page', 1), 20)
+    return render(request, 'products/manage.html', {
+        'page_obj': page_obj,
+        'query': query,
+    })
+
+
+@staff_member_required
+def product_edit_view(request, slug):
+    product = get_object_or_404(Product, slug=slug)
+    gallery_images = product.images.all()
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+
+        if action == 'delete_image':
+            image_id = request.POST.get('image_id')
+            ProductImage.objects.filter(id=image_id, product=product).delete()
+            messages.success(request, 'Image deleted.')
+            return redirect('products:edit', slug=slug)
+
+        if action == 'add_image':
+            img_form = ProductImageForm(request.POST, request.FILES)
+            if img_form.is_valid():
+                img = img_form.save(commit=False)
+                img.product = product
+                img.save()
+                messages.success(request, 'Image added.')
+            return redirect('products:edit', slug=slug)
+
+        form = ProductForm(request.POST, request.FILES, instance=product)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f'Product "{product.name}" updated successfully.')
+            return redirect('products:edit', slug=product.slug)
+        else:
+            messages.error(request, 'Please correct the errors below.')
+    else:
+        form = ProductForm(instance=product)
+
+    img_form = ProductImageForm()
+    return render(request, 'products/edit.html', {
+        'form': form,
+        'product': product,
+        'gallery_images': gallery_images,
+        'img_form': img_form,
+    })

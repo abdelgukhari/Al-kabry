@@ -12,6 +12,58 @@ from orders.models import Order
 
 
 @staff_member_required
+def dashboard_view(request):
+    """Analytics dashboard with algorithm stats and charts."""
+    days = int(request.GET.get('days', 30))
+    start_date = timezone.now() - timedelta(days=days)
+
+    algorithm_stats = {}
+    for algo in RecommendationService.ALGORITHMS:
+        events = RecommendationEvent.objects.filter(
+            algorithm=algo,
+            created_at__gte=start_date
+        )
+        impressions = events.filter(event_type='impression').count()
+        clicks = events.filter(event_type='click').count()
+        purchases = events.filter(event_type='purchase').count()
+        revenue = events.filter(
+            event_type='purchase'
+        ).aggregate(total=Sum('revenue'))['total'] or 0
+
+        algorithm_stats[algo] = {
+            'impressions': impressions,
+            'clicks': clicks,
+            'purchases': purchases,
+            'revenue': float(revenue),
+            'ctr': (clicks / impressions * 100) if impressions > 0 else 0,
+            'conversion_rate': (purchases / impressions * 100) if impressions > 0 else 0,
+        }
+
+    total_orders = Order.objects.filter(created_at__gte=start_date).count()
+    total_revenue = Order.objects.filter(
+        created_at__gte=start_date
+    ).aggregate(total=Sum('total'))['total'] or 0
+    top_products = Product.objects.order_by('-purchases_count')[:10]
+
+    chart_data = {
+        'labels': list(algorithm_stats.keys()),
+        'ctr': [stats['ctr'] for stats in algorithm_stats.values()],
+        'conversion_rate': [stats['conversion_rate'] for stats in algorithm_stats.values()],
+        'revenue': [stats['revenue'] for stats in algorithm_stats.values()],
+    }
+
+    context = {
+        'algorithm_stats': algorithm_stats,
+        'total_orders': total_orders,
+        'total_revenue': float(total_revenue),
+        'top_products': top_products,
+        'chart_data': chart_data,
+        'days': days,
+    }
+    return render(request, 'analytics/dashboard.html', context)
+
+
+@staff_member_required
 def algorithm_performance_api(request):
     """API endpoint for algorithm performance data."""
     days = int(request.GET.get('days', 30))

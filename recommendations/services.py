@@ -582,82 +582,92 @@ class RecommendationService:
     def evaluate_algorithm(self, algorithm):
         """
         Algorithm evaluation using CATEGORY-BASED ground truth.
-        
-        Since users have clear category preferences (94%+ of interactions in 2 categories),
-        we measure: Does the algorithm recommend products from the user's preferred categories?
-        
-        This is the correct evaluation for preference-based recommendation systems.
+        Results are cached for 30 minutes to avoid recomputing on every page load.
         """
+        from django.core.cache import cache
+
+        cache_key = f'algo_eval_{algorithm}'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result = self._evaluate_algorithm_uncached(algorithm)
+        cache.set(cache_key, result, 60 * 30)
+        return result
+
+    def _evaluate_algorithm_uncached(self, algorithm):
         from accounts.models import User
-        
-        # Get users with interactions
+
         users_with_data = list(
             User.objects.filter(interactions__isnull=False).distinct()[:50]
         )
-        
+
         if not users_with_data:
             return None
-        
+
+        # Pre-fetch all categories and build parent lookup to avoid N+1 queries
+        all_categories = {c.id: c for c in Category.objects.all()}
+        def get_root_category_name(category_id):
+            cat = all_categories.get(category_id)
+            while cat and cat.parent_id:
+                cat = all_categories.get(cat.parent_id)
+            return cat.name if cat else None
+
+        # Pre-fetch all interactions with product/category info in one query
+        all_interactions = (
+            UserInteraction.objects
+            .filter(user__in=users_with_data)
+            .select_related('product__category')
+            .values_list('user_id', 'product_id', 'product__category_id')
+        )
+        user_interaction_map = defaultdict(list)
+        for user_id, product_id, category_id in all_interactions:
+            user_interaction_map[user_id].append((product_id, category_id))
+
         precisions = []
         recalls = []
         ndcgs = []
         hit_rates = []
         mrrs = []
-        
+
         k = 10
-        
+
         for user in users_with_data:
-            # Find user's PREFERRED categories (where they have most interactions)
-            user_interactions = UserInteraction.objects.filter(user=user)
-            if not user_interactions.exists():
+            interactions = user_interaction_map.get(user.id, [])
+            if not interactions:
                 continue
-            
-            # Count interactions by parent category
+
             cat_counts = {}
-            for interaction in user_interactions:
-                parent = interaction.product.category
-                while parent.parent:
-                    parent = parent.parent
-                cat_name = parent.name
-                cat_counts[cat_name] = cat_counts.get(cat_name, 0) + 1
-            
-            # Top 2 categories are the "ground truth" preferences
+            interacted_product_ids = set()
+            for product_id, category_id in interactions:
+                interacted_product_ids.add(product_id)
+                root_name = get_root_category_name(category_id)
+                if root_name:
+                    cat_counts[root_name] = cat_counts.get(root_name, 0) + 1
+
             sorted_cats = sorted(cat_counts.items(), key=lambda x: x[1], reverse=True)
             preferred_categories = set(cat for cat, _ in sorted_cats[:2])
-            
+
             if not preferred_categories:
                 continue
-            
-            # Get ALL products from preferred categories (excluding already interacted)
-            interacted_product_ids = set(
-                user_interactions.values_list('product_id', flat=True)
-            )
-            
-            # Get parent category objects
-            parent_category_names = list(preferred_categories)
-            
-            # Get all subcategories belonging to preferred parent categories
-            subcategories = Category.objects.filter(
-                parent__name__in=parent_category_names
-            )
-            subcategory_ids = list(subcategories.values_list('id', flat=True))
-            
-            # Ground truth: products from subcategories of preferred categories
-            ground_truth_products = Product.objects.filter(
+
+            subcategory_ids = [
+                cid for cid, cat in all_categories.items()
+                if cat.parent_id and get_root_category_name(cid) in preferred_categories
+            ]
+
+            ground_truth_count = Product.objects.filter(
                 category__in=subcategory_ids,
                 is_active=True,
                 is_available=True
-            ).exclude(id__in=interacted_product_ids)
-            
-            if not ground_truth_products:
+            ).exclude(id__in=interacted_product_ids).count()
+
+            if not ground_truth_count:
                 continue
-            
-            ground_truth_ids = set(p.id for p in ground_truth_products)
-            
-            # Get recommendations
+
             recs = self.get_recommendations_for_user(user, algorithm, limit=k)
             recommended_ids = [p.id for p in recs]
-            
+
             if not recommended_ids:
                 precisions.append(0.0)
                 recalls.append(0.0)
@@ -665,69 +675,60 @@ class RecommendationService:
                 hit_rates.append(0.0)
                 mrrs.append(0.0)
                 continue
-            
-            # Check if recommended products are from preferred categories
+
+            # Batch-fetch recommended products with categories
+            rec_products = {
+                p.id: p for p in
+                Product.objects.filter(id__in=recommended_ids).select_related('category')
+            }
+
             hits_list = []
             for pid in recommended_ids:
-                try:
-                    product = Product.objects.get(id=pid)
-                    # Get parent category
-                    parent = product.category
-                    while parent.parent:
-                        parent = parent.parent
-                    if parent.name in preferred_categories:
-                        hits_list.append(1)
-                    else:
-                        hits_list.append(0)
-                except Product.DoesNotExist:
+                product = rec_products.get(pid)
+                if product and product.category_id:
+                    root_name = get_root_category_name(product.category_id)
+                    hits_list.append(1 if root_name in preferred_categories else 0)
+                else:
                     hits_list.append(0)
-            
+
             hits = sum(hits_list)
-            
-            # Precision@K
+
             precision = hits / len(recommended_ids)
             precisions.append(precision)
-            
-            # Recall@K (fraction of preferred-category products we recommended)
-            recall = hits / len(ground_truth_ids) if ground_truth_ids else 0
-            recalls.append(min(recall, 1.0))  # Cap at 1.0
-            
-            # Hit Rate
+
+            recall = hits / ground_truth_count if ground_truth_count else 0
+            recalls.append(min(recall, 1.0))
+
             hit_rates.append(1.0 if hits > 0 else 0.0)
-            
-            # MRR
+
             rr = 0.0
             for i, is_hit in enumerate(hits_list):
                 if is_hit:
                     rr = 1.0 / (i + 1)
                     break
             mrrs.append(rr)
-            
-            # NDCG@K
+
             dcg = sum(hit / np.log2(i + 2) for i, hit in enumerate(hits_list))
-            ideal_dcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(ground_truth_ids), k)))
+            ideal_dcg = sum(1.0 / np.log2(i + 2) for i in range(min(ground_truth_count, k)))
             ndcg = dcg / ideal_dcg if ideal_dcg > 0 else 0.0
             ndcgs.append(ndcg)
-        
-        # Calculate metrics
+
         avg_precision = np.mean(precisions) if precisions else 0.0
         avg_recall = np.mean(recalls) if recalls else 0.0
         avg_ndcg = np.mean(ndcgs) if ndcgs else 0.0
         avg_hit_rate = np.mean(hit_rates) if hit_rates else 0.0
         avg_mrr = np.mean(mrrs) if mrrs else 0.0
-        
-        # F1
+
         f1 = (2 * avg_precision * avg_recall / (avg_precision + avg_recall)
               if (avg_precision + avg_recall) > 0 else 0.0)
-        
-        # OVERALL ACCURACY
+
         accuracy = (
             avg_hit_rate * 0.35 +
             avg_precision * 0.30 +
             avg_mrr * 0.20 +
             avg_ndcg * 0.15
         )
-        
+
         return {
             'precision': avg_precision,
             'recall': avg_recall,
