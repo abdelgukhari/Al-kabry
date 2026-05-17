@@ -254,6 +254,22 @@ def product_manage_view(request):
 
 
 @staff_member_required
+def product_create_view(request):
+    if request.method == 'POST':
+        form = ProductForm(request.POST, request.FILES)
+        if form.is_valid():
+            product = form.save()
+            messages.success(request, f'Product "{product.name}" created successfully.')
+            return redirect('products:edit', slug=product.slug)
+        else:
+            messages.error(request, 'Please correct the errors below.')
+    else:
+        form = ProductForm()
+
+    return render(request, 'products/create.html', {'form': form})
+
+
+@staff_member_required
 def product_edit_view(request, slug):
     product = get_object_or_404(Product, slug=slug)
     gallery_images = product.images.all()

@@ -1,4 +1,4 @@
-# AlKabry Ecommerce - Project Summary
+# Kabbary Store- Project Summary
 
 ## ✅ Project Status: COMPLETE
 

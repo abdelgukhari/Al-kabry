@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Manage Products - AlKabry Ecommerce{% endblock %}
+{% block title %}Manage Products - Kabbary Store{% endblock %}
 
 {% block content %}
 <div class="container mx-auto px-4 py-8">
@@ -11,7 +11,15 @@
             </svg>
             Manage Products
         </h1>
-        <a href="{% url 'accounts:admin_dashboard' %}" class="text-amazon-blue hover:underline text-sm font-semibold">&larr; Back to Dashboard</a>
+        <div class="flex items-center gap-3">
+            <a href="{% url 'products:create' %}" class="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition-colors">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                </svg>
+                Add Product
+            </a>
+            <a href="{% url 'accounts:admin_dashboard' %}" class="text-amazon-blue hover:underline text-sm font-semibold">&larr; Back to Dashboard</a>
+        </div>
     </div>
 
     <form method="GET" class="mb-6">

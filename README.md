@@ -1,4 +1,4 @@
-# AlKabry Ecommerce - Recommendation System Comparison Platform
+# Kabbary Store - Recommendation System Comparison Platform
 
 [![Django](https://img.shields.io/badge/Django-5.0.4-green.svg)](https://www.djangoproject.com/)
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
