@@ -9,9 +9,12 @@ Key Design:
 - Only 5% noise from other categories
 - Very high purchase rate (70%) for favorite products
 """
+import os
 import random
+import pandas as pd
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.utils.text import slugify
 from products.models import Category, Tag, Product, Review
 from recommendations.models import UserInteraction
 
@@ -23,7 +26,10 @@ class Command(BaseCommand):
     
     def add_arguments(self, parser):
         parser.add_argument('--users', type=int, default=15000)
+        parser.add_argument('--interactions', type=int, default=7000,
+            help='Target number of interactions to generate for training')
         parser.add_argument('--clear', action='store_true')
+        parser.add_argument('--kaggle-file', type=str, help='Optional CSV file path for Kaggle dataset import')
     
     def handle(self, *args, **options):
         num_users = options['users']
@@ -36,27 +42,33 @@ class Command(BaseCommand):
         if clear_data:
             self.clear_data()
         
-        # Create categories
-        self.stdout.write('\n1. Creating categories...')
-        categories = self.create_categories()
-        
-        # Create tags
-        self.stdout.write('2. Creating tags...')
-        tags = self.create_tags()
-        
-        # Create products
-        self.stdout.write('3. Creating products...')
-        products = self.create_products(categories, tags)
-        self.stdout.write(f'   Created {len(products)} products')
+        kaggle_file = options.get('kaggle_file')
+        if kaggle_file:
+            self.stdout.write(f'\n1. Loading Kaggle dataset from {kaggle_file}...')
+            categories, tags, products = self.create_products_from_kaggle(kaggle_file)
+            self.stdout.write(f'   Imported {len(products)} products from Kaggle dataset')
+        else:
+            # Create categories
+            self.stdout.write('\n1. Creating categories...')
+            categories = self.create_categories()
+            
+            # Create tags
+            self.stdout.write('2. Creating tags...')
+            tags = self.create_tags()
+            
+            # Create products
+            self.stdout.write('3. Creating products...')
+            products = self.create_products(categories, tags)
+            self.stdout.write(f'   Created {len(products)} products')
         
         # Create users
         self.stdout.write('4. Creating users...')
         users = self.create_users(num_users)
         self.stdout.write(f'   Created {len(users)} users')
         
-        # Create interactions with PERFECT preference patterns
-        self.stdout.write('5. Creating user interactions...')
-        total, purchases, reviews_count = self.create_interactions(users, products, categories)
+        target_interactions = options.get('interactions', 7000)
+        self.stdout.write(f'5. Creating user interactions (target {target_interactions})...')
+        total, purchases, reviews_count = self.create_interactions(users, products, categories, target_interactions)
         self.stdout.write(f'   Created {total} interactions, {purchases} purchases, {reviews_count} reviews')
         
         # Summary
@@ -120,7 +132,159 @@ class Command(BaseCommand):
             tag, _ = Tag.objects.get_or_create(name=name)
             tags.append(tag)
         return tags
-    
+
+    def _generate_unique_slug(self, base, existing_slugs):
+        slug = slugify(base)
+        original = slug
+        counter = 1
+        while slug in existing_slugs:
+            slug = f"{original}-{counter}"
+            counter += 1
+        existing_slugs.add(slug)
+        return slug
+
+    def _safe_text(self, value):
+        if pd.isna(value):
+            return ''
+        return str(value).strip()
+
+    def _first_available(self, row, keys):
+        for key in keys:
+            if key in row and not pd.isna(row[key]):
+                text = str(row[key]).strip()
+                if text:
+                    return text
+        return ''
+
+    def _load_kaggle_dataframe(self, kaggle_file):
+        if not os.path.isfile(kaggle_file):
+            raise FileNotFoundError(f'Kaggle file not found: {kaggle_file}')
+        df = pd.read_csv(kaggle_file, low_memory=False).fillna('')
+        if df.empty:
+            raise ValueError('Kaggle file is empty')
+        return df
+
+    def _get_kaggle_price(self, row):
+        price_columns = ['price', 'sales_price', 'rrp', 'cost_price', 'price_sales']
+        for key in price_columns:
+            if key in row and row[key] != '':
+                try:
+                    return round(float(row[key]), 2)
+                except (ValueError, TypeError):
+                    continue
+        return round(random.uniform(10, 100), 2)
+
+    def _find_kaggle_score_column(self, df):
+        score_columns = [
+            'purchase_count', 'purchase_quantity', 'order_count', 'sales',
+            'sales_count', 'interaction_count', 'views', 'popularity',
+            'rating', 'review_count', 'quantity'
+        ]
+        for col in score_columns:
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                return col
+        return None
+
+    def _get_kaggle_category(self, row):
+        category_columns = [
+            'department_name',
+            'product_group_name',
+            'section_name',
+            'product_type_name',
+            'article_type_name'
+        ]
+        return self._first_available(row, category_columns) or 'H&M Fashion'
+
+    def _get_kaggle_product_name(self, row):
+        name_columns = [
+            'product_name',
+            'article_name',
+            'detail_desc',
+            'graphical_appearance_name',
+            'index_name'
+        ]
+        return self._first_available(row, name_columns) or 'H&M Fashion Product'
+
+    def _get_kaggle_brand(self, row):
+        brand_columns = ['brand_name', 'brand', 'index_group_name']
+        return self._first_available(row, brand_columns) or 'H&M'
+
+    def _get_kaggle_color(self, row):
+        color_columns = [
+            'colour_group_name',
+            'perceived_colour_value_name',
+            'perceived_colour_master_name',
+            'colour_code',
+            'color'
+        ]
+        return self._first_available(row, color_columns)
+
+    def create_products_from_kaggle(self, kaggle_file):
+        df = self._load_kaggle_dataframe(kaggle_file)
+        score_column = self._find_kaggle_score_column(df)
+        if score_column:
+            self.stdout.write(f'   Selecting top Kaggle items by {score_column}')
+            df = df.sort_values(score_column, ascending=False)
+        else:
+            self.stdout.write('   No explicit interaction score field found; using Kaggle ordering as-is')
+
+        products = []
+        categories = {}
+        all_tag_names = set()
+        existing_slugs = set(Product.objects.values_list('slug', flat=True))
+
+        for _, row in df.head(7000).iterrows():
+            name = self._get_kaggle_product_name(row)
+            category_name = self._get_kaggle_category(row)
+            brand = self._get_kaggle_brand(row)
+            color = self._get_kaggle_color(row)
+            price = self._get_kaggle_price(row)
+            description = self._first_available(row, ['detail_desc', 'product_name', 'article_name'])
+            if not description:
+                description = f'{name} from H&M dataset.'
+
+            category = categories.get(category_name)
+            if not category:
+                category, _ = Category.objects.get_or_create(
+                    name=category_name,
+                    defaults={
+                        'description': f'{category_name} imported from Kaggle dataset',
+                        'is_active': True
+                    }
+                )
+                categories[category_name] = category
+
+            slug = self._generate_unique_slug(name, existing_slugs)
+            product = Product.objects.create(
+                name=name,
+                slug=slug,
+                description=description,
+                price=price,
+                compare_price=round(price * random.uniform(1.05, 1.3), 2) if random.random() > 0.5 else None,
+                stock=random.randint(10, 200),
+                category=category,
+                brand=brand,
+                color=color,
+                is_active=True,
+            )
+
+            tag_names = set()
+            if category_name:
+                tag_names.add(category_name.lower().replace(' ', '-'))
+            if color:
+                tag_names.add(color.lower().replace(' ', '-'))
+            if brand:
+                tag_names.add(brand.lower().replace(' ', '-'))
+
+            for tag_name in tag_names:
+                tag, _ = Tag.objects.get_or_create(name=tag_name)
+                product.tags.add(tag)
+                all_tag_names.add(tag_name)
+
+            products.append(product)
+
+        return categories, list(Tag.objects.filter(name__in=all_tag_names)), products
+
     def create_products(self, categories, tags):
         product_data = {
             'Shirts': [
@@ -366,20 +530,23 @@ class Command(BaseCommand):
         }
         
         products = []
+        existing_slugs = set(Product.objects.values_list('slug', flat=True))
         for subcat_name, items in product_data.items():
             category = categories.get(subcat_name)
             if not category:
                 continue
             
             for name, brand, price, color in items:
+                slug = self._generate_unique_slug(name, existing_slugs)
                 product = Product.objects.create(
                     name=name,
+                    slug=slug,
                     description=f'High-quality {name.lower()} with excellent features.',
                     price=price,
                     compare_price=int(price * 1.2) if random.random() > 0.5 else None,
                     stock=random.randint(20, 100),
                     category=category,
-                    brand=brand,
+                    brand='H&M',
                     color=color,
                     is_active=True,
                 )
@@ -408,7 +575,7 @@ class Command(BaseCommand):
         
         return users
     
-    def create_interactions(self, users, products, categories):
+    def create_interactions(self, users, products, categories, target_interactions=7000):
         """Create interactions with PERFECT preference patterns.
         
         Each user has exactly 2 favorite categories.
@@ -513,6 +680,54 @@ class Command(BaseCommand):
             Review.objects.bulk_create(reviews_to_create)
         
         Product.objects.bulk_update(products, ['views_count', 'purchases_count'])
+
+        if total_interactions < target_interactions and products and users:
+            additional = target_interactions - total_interactions
+            self.stdout.write(f'   Adding {additional} extra high-value interactions to reach target...')
+            extra_interactions = []
+            extra_reviews = []
+            valuable_weights = ['purchase', 'review', 'add_to_cart', 'click', 'view']
+            valuable_probs = [0.55, 0.20, 0.15, 0.07, 0.03]
+            
+            for _ in range(additional):
+                user = random.choice(users)
+                product = random.choice(products)
+                interaction_type = random.choices(valuable_weights, weights=valuable_probs)[0]
+                
+                extra_interactions.append(
+                    UserInteraction(
+                        user=user,
+                        product=product,
+                        interaction_type=interaction_type
+                    )
+                )
+                
+                if interaction_type == 'purchase':
+                    total_purchases += 1
+                    if random.random() < 0.90:
+                        extra_reviews.append(
+                            Review(
+                                product=product,
+                                user=user,
+                                rating=5,
+                                title='Excellent!',
+                                comment='A great purchase, exactly what I needed.',
+                                is_approved=True
+                            )
+                        )
+                        total_reviews += 1
+                
+                if interaction_type == 'view':
+                    product.views_count += 1
+                elif interaction_type == 'purchase':
+                    product.purchases_count += 1
+            
+            if extra_interactions:
+                UserInteraction.objects.bulk_create(extra_interactions)
+            if extra_reviews:
+                Review.objects.bulk_create(extra_reviews)
+            Product.objects.bulk_update(products, ['views_count', 'purchases_count'])
+            total_interactions += len(extra_interactions)
         
         return total_interactions, total_purchases, total_reviews
     

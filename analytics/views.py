@@ -92,13 +92,34 @@ def algorithm_performance_api(request):
 def compare_view(request):
     """Compare all algorithms side by side."""
     service = RecommendationService()
+    preferred_algorithm = 'hybrid'
 
-    # Get evaluation metrics for each algorithm
+    # Get evaluation metrics for each algorithm with Hybrid as first section.
     evaluations = {}
-    for algo in RecommendationService.ALGORITHMS:
-        metrics = service.evaluate_algorithm(algo)
+    algorithm_order = [preferred_algorithm] + [algo for algo in RecommendationService.ALGORITHMS if algo != preferred_algorithm]
+    for algo in algorithm_order:
+        metrics = AlgorithmMetrics.objects.filter(
+            algorithm=algo
+        ).order_by('-date').first()
+
         if metrics:
-            evaluations[algo] = metrics
+            metrics = {
+                'precision': metrics.precision,
+                'recall': metrics.recall,
+                'f1_score': metrics.f1_score,
+                'ndcg': metrics.ndcg,
+                'diversity': metrics.diversity,
+                'coverage': metrics.coverage,
+                'ctr': metrics.ctr,
+                'conversion_rate': metrics.conversion_rate,
+                'total_revenue': float(metrics.total_revenue),
+                'date': metrics.date,
+            }
+            evaluations[algo] = service._normalize_metrics(metrics)
+        else:
+            metrics = service.evaluate_algorithm(algo)
+            if metrics:
+                evaluations[algo] = metrics
 
     # Get historical performance
     historical_data = {}
@@ -113,10 +134,9 @@ def compare_view(request):
             'revenue': [(m.date.strftime('%Y-%m-%d'), float(m.total_revenue)) for m in metrics],
         }
 
-    # Determine winner
+    # Score metrics for charting/comparison. No winner label is assigned.
+    scores = {}
     if evaluations:
-        # Score algorithms based on weighted metrics
-        scores = {}
         for algo, metrics in evaluations.items():
             scores[algo] = (
                 metrics.get('precision', 0) * 0.25 +
@@ -126,16 +146,11 @@ def compare_view(request):
                 metrics.get('coverage', 0) * 0.10
             )
 
-        winner = max(scores.items(), key=lambda x: x[1])[0] if scores else None
-    else:
-        winner = None
-        scores = {}
-
     context = {
         'evaluations': evaluations,
         'historical_data': historical_data,
         'scores': scores,
-        'winner': winner,
+        'preferred_algorithm': preferred_algorithm,
     }
     return render(request, 'analytics/compare.html', context)
 

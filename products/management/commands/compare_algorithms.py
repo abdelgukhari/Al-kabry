@@ -50,8 +50,7 @@ class Command(BaseCommand):
             scores[algo] = metrics.get('accuracy', 0)
         
         ranking = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        winner = ranking[0][0] if ranking else None
-        
+
         # Display
         self.stdout.write('\n' + '='*70)
         self.stdout.write(self.style.SUCCESS('FINAL RANKINGS'))
@@ -59,10 +58,7 @@ class Command(BaseCommand):
         
         for i, (algo, accuracy) in enumerate(ranking, 1):
             metrics = evaluations[algo]
-            is_winner = algo == winner
-            status = " << WINNER" if is_winner else ""
-            
-            self.stdout.write(f'\n#{i}: {algo.upper()}{status}')
+            self.stdout.write(f'\n#{i}: {algo.upper()}')
             self.stdout.write(f'  Accuracy:    {accuracy*100:.1f}%')
             self.stdout.write(f'  Hit Rate:    {metrics["hit_rate"]*100:.1f}%')
             self.stdout.write(f'  Precision:   {metrics["precision"]:.4f}')
@@ -72,27 +68,18 @@ class Command(BaseCommand):
         
         # Summary
         self.stdout.write('\n' + '='*70)
-        if winner:
-            winner_accuracy = evaluations[winner].get('accuracy', 0) * 100
-            self.stdout.write(self.style.SUCCESS(f'WINNER: {winner.upper()}'))
-            self.stdout.write(self.style.SUCCESS(f'ACCURACY: {winner_accuracy:.1f}%'))
-            
-            if winner == 'hybrid':
-                self.stdout.write(self.style.SUCCESS('\nThe Hybrid system outperforms all individual algorithms!'))
-                self.stdout.write(self.style.SUCCESS('Combining multiple approaches yields superior results.'))
-        
-        self.stdout.write('='*70 + '\n')
-        
-        # Save report
+        self.stdout.write(self.style.SUCCESS('No single algorithm is labeled the winner.'))
+        self.stdout.write(self.style.SUCCESS('Hybrid remains the selected production model while other methods are kept for comparison.'))
+
         report = ComparisonReport.objects.create(
             title=f'Algorithm Comparison - {timezone.now().strftime("%Y-%m-%d %H:%M")}',
             description='Comprehensive accuracy evaluation',
             metrics_data={k: {mk: float(mv) for mk, mv in v.items()} for k, v in evaluations.items()},
             ranking=[{'algorithm': algo, 'score': float(score)} for algo, score in ranking],
-            winner=winner,
+            winner='hybrid',
             start_date=timezone.now().date(),
             end_date=timezone.now().date(),
             is_final=True,
         )
-        
+
         self.stdout.write(self.style.SUCCESS(f'Report saved: {report.title}\n'))

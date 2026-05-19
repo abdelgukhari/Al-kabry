@@ -61,7 +61,7 @@
                     </svg>
                     <div>
                         <div class="font-bold text-lg leading-tight">Kabbary Store</div>
-                                            </div>
+                    </div>
                 </a>
 
                 <!-- Deliver To (optional) -->
@@ -191,10 +191,11 @@
             </div>
         </div>
 
-        <!-- Sub Header (Navigation) -->
+        <!-- Sub Header (Navigation) - SHORTER, design unchanged -->
         <div class="bg-amazon-light text-white">
             <div class="container mx-auto px-4 py-2">
                 <div class="flex items-center gap-4 overflow-x-auto">
+                    <!-- All button -->
                     <button class="flex items-center gap-1 hover:border hover:border-white p-2 rounded whitespace-nowrap" id="menuButton">
                         <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
@@ -203,15 +204,41 @@
                     </button>
                     <a href="{% url 'products:home' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Home</a>
                     <a href="{% url 'products:list' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Products</a>
+
+                    <!-- Admin Tools dropdown (replaces separate Admin, Manage Products, Compare) -->
                     {% if user.is_staff %}
-                    <a href="{% url 'accounts:admin_dashboard' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap font-semibold text-amazon-orange">Admin</a>
-                    <a href="{% url 'products:manage' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Manage Products</a>
-                    <a href="{% url 'analytics:compare' %}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">Compare</a>
+                    <div class="relative group">
+                        <button class="hover:border hover:border-white p-2 rounded whitespace-nowrap flex items-center gap-1">
+                            Admin Tools
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                        </button>
+                        <div class="absolute hidden group-hover:block bg-amazon-light text-white rounded shadow-lg mt-1 py-2 z-50 w-48">
+                            <a href="{% url 'accounts:admin_dashboard' %}" class="block px-4 py-2 hover:bg-white/10">Admin Dashboard</a>
+                            <a href="{% url 'products:manage' %}" class="block px-4 py-2 hover:bg-white/10">Manage Products</a>
+                            <a href="{% url 'analytics:compare' %}" class="block px-4 py-2 hover:bg-white/10">Compare Algorithms</a>
+                            <a href="{% url 'analytics:generate_report' %}" class="block px-4 py-2 hover:bg-white/10">Generate Report</a>
+                        </div>
+                    </div>
                     {% endif %}
+
+                    <!-- Show only first 3 categories directly, rest in "More Categories" dropdown -->
                     {% if categories %}
-                    {% for category in categories|slice:":6" %}
+                    {% for category in categories|slice:":3" %}
                     <a href="{{ category.get_absolute_url }}" class="hover:border hover:border-white p-2 rounded whitespace-nowrap">{{ category.name }}</a>
                     {% endfor %}
+                    {% if categories|length > 3 %}
+                    <div class="relative group">
+                        <button class="hover:border hover:border-white p-2 rounded whitespace-nowrap flex items-center gap-1">
+                            More Categories
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                        </button>
+                        <div class="absolute hidden group-hover:block bg-amazon-light text-white rounded shadow-lg mt-1 py-2 z-50 w-48">
+                            {% for category in categories|slice:"3:" %}
+                            <a href="{{ category.get_absolute_url }}" class="block px-4 py-2 hover:bg-white/10 whitespace-nowrap">{{ category.name }}</a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                     {% endif %}
                 </div>
             </div>

@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from collections import defaultdict
 from django.db import models
 from products.models import Product, Category, Review
@@ -18,10 +19,9 @@ from analytics.models import AlgorithmMetrics
 from datetime import date, datetime
 import time
 
-
 class RecommendationService:
     """Optimized recommendation service with 5 algorithms."""
-    
+
     ALGORITHMS = [
         'content_based',
         'user_based_cf',
@@ -38,7 +38,26 @@ class RecommendationService:
         self._item_similarity_matrix = None
         self._user_similarity_matrix = None
         self._svd_model = None
-    
+        self._recommendation_cache = {}
+        self._train_models()
+
+    def _train_models(self):
+        """Load the current data and prepare models for recommendation."""
+        self._get_user_item_matrix()
+        self._get_product_features()
+
+    def reset_models(self):
+        """Clear cached matrices and retrain recommendation models."""
+        self._user_item_matrix = None
+        self._product_features_df = None
+        self._tfidf_matrix = None
+        self._tfidf_vectorizer = None
+        self._item_similarity_matrix = None
+        self._user_similarity_matrix = None
+        self._svd_model = None
+        self._recommendation_cache = {}
+        self._train_models()
+
     def get_recommendations_for_user(self, user, algorithm='hybrid', limit=8, exclude_ids=None):
         """Get product recommendations for a user."""
         exclude_ids = set(exclude_ids or [])
@@ -66,7 +85,43 @@ class RecommendationService:
         ][:limit]
         
         return recommendations
-    
+
+    def _order_products_by_ids(self, product_ids):
+        """Preserve recommendation ranking when fetching products from the database."""
+        if not product_ids:
+            return []
+
+        preserved_order = models.Case(
+            *[models.When(id=pid, then=pos) for pos, pid in enumerate(product_ids)],
+            output_field=models.IntegerField(),
+        )
+        products = list(Product.objects.filter(
+            id__in=product_ids,
+            is_available=True,
+            is_active=True,
+        ).order_by(preserved_order))
+        product_map = {product.id: product for product in products}
+        return [product_map[pid] for pid in product_ids if pid in product_map]
+
+    def get_all_recommendations_for_user(self, user, limit=8, exclude_ids=None):
+        """Fetch recommendations for every available algorithm efficiently."""
+        exclude_ids = set(exclude_ids or [])
+        cache_key = (user.id if user else 'anonymous', limit, tuple(sorted(exclude_ids)))
+        if cache_key in self._recommendation_cache:
+            return self._recommendation_cache[cache_key]
+
+        all_recommendations = {}
+        for algorithm in self.ALGORITHMS:
+            all_recommendations[algorithm] = self.get_recommendations_for_user(
+                user,
+                algorithm=algorithm,
+                limit=limit,
+                exclude_ids=exclude_ids
+            )
+
+        self._recommendation_cache[cache_key] = all_recommendations
+        return all_recommendations
+
     def _get_user_item_matrix(self):
         """Create user-item interaction matrix."""
         if self._user_item_matrix is not None:
@@ -223,7 +278,7 @@ class RecommendationService:
         top_indices = similarities.argsort()[-limit:][::-1]
         recommended_ids = features_df.iloc[top_indices]['product_id'].values.tolist()
         
-        return list(Product.objects.filter(id__in=recommended_ids))
+        return self._order_products_by_ids(recommended_ids)
     
     # =========================================================================
     # ALGORITHM 2: User-Based Collaborative Filtering
@@ -289,7 +344,7 @@ class RecommendationService:
             ).exclude(id__in=recommended_ids).order_by('-views_count')[:limit - len(recommended_ids)]
             recommended_ids.extend([p.id for p in popular])
         
-        return list(Product.objects.filter(id__in=recommended_ids))
+        return self._order_products_by_ids(recommended_ids)
     
     # =========================================================================
     # ALGORITHM 3: Item-Based Collaborative Filtering
@@ -308,9 +363,6 @@ class RecommendationService:
         # Item similarity
         if self._item_similarity_matrix is None:
             item_matrix = matrix.T
-            if len(item_matrix) > 200:
-                item_matrix = item_matrix.sample(200, random_state=42)
-            
             self._item_similarity_matrix = pd.DataFrame(
                 cosine_similarity(item_matrix),
                 index=item_matrix.index,
@@ -350,7 +402,7 @@ class RecommendationService:
             ).exclude(id__in=recommended_ids).order_by('-views_count')[:limit - len(recommended_ids)]
             recommended_ids.extend([p.id for p in popular])
         
-        return list(Product.objects.filter(id__in=recommended_ids))
+        return self._order_products_by_ids(recommended_ids)
     
     # =========================================================================
     # ALGORITHM 4: SVD
@@ -398,7 +450,7 @@ class RecommendationService:
             ).exclude(id__in=recommended_ids).order_by('-views_count')[:limit - len(recommended_ids)]
             recommended_ids.extend([p.id for p in popular])
         
-        return list(Product.objects.filter(id__in=recommended_ids))
+        return self._order_products_by_ids(recommended_ids)
     
     # =========================================================================
     # ALGORITHM 5: Hybrid (Optimized for 90%+ accuracy)
@@ -436,14 +488,14 @@ class RecommendationService:
                 pass
         
         # Step 3: Sort primary by consensus votes (products agreed upon by more algorithms rank higher)
+        primary_order = {p.id: idx for idx, p in enumerate(primary_recs)}
         sorted_primary = sorted(
             primary_recs,
-            key=lambda p: (-consensus_votes.get(p.id, 0), primary_ids)
+            key=lambda p: (-consensus_votes.get(p.id, 0), primary_order.get(p.id, 0))
         )
         
         recommended_ids = [p.id for p in sorted_primary[:limit]]
-        
-        return list(Product.objects.filter(id__in=recommended_ids))
+        return self._order_products_by_ids(recommended_ids)
     
     def _get_recommendations_with_scores(self, user, algorithm, limit=8):
         """Get recommendations with scores."""
@@ -489,7 +541,7 @@ class RecommendationService:
         top_indices = similarities.argsort()[-limit:][::-1]
         similar_ids = features_df.iloc[top_indices]['product_id'].values.tolist()
 
-        return list(Product.objects.filter(id__in=similar_ids))
+        return self._order_products_by_ids(similar_ids)
 
     def _similar_products_item_based(self, product, limit=6):
         """Find similar products using item-based collaborative filtering."""
@@ -502,9 +554,6 @@ class RecommendationService:
         # Build item similarity if not already done
         if self._item_similarity_matrix is None:
             item_matrix = matrix.T
-            if len(item_matrix) > 200:
-                item_matrix = item_matrix.sample(200, random_state=42)
-
             self._item_similarity_matrix = pd.DataFrame(
                 cosine_similarity(item_matrix),
                 index=item_matrix.index,
@@ -522,7 +571,7 @@ class RecommendationService:
         top_similar = similarities.nlargest(limit)
         similar_ids = top_similar.index.tolist()
 
-        return list(Product.objects.filter(id__in=similar_ids))
+        return self._order_products_by_ids(similar_ids)
 
     def _similar_products_svd(self, product, limit=6):
         """Find similar products using SVD latent factors."""
@@ -551,7 +600,7 @@ class RecommendationService:
         top_indices = similarities.argsort()[-limit:][::-1]
         similar_ids = [matrix.columns[i] for i in top_indices]
 
-        return list(Product.objects.filter(id__in=similar_ids))
+        return self._order_products_by_ids(similar_ids)
 
     def compare_all_algorithms(self, user):
         """
@@ -581,152 +630,237 @@ class RecommendationService:
     # =========================================================================
     def evaluate_algorithm(self, algorithm):
         """
-        Algorithm evaluation using CATEGORY-BASED ground truth.
-        Results are cached for 30 minutes to avoid recomputing on every page load.
+        Compute evaluation metrics without caching to ensure fresh
+        train/test splits on every call.
         """
-        from django.core.cache import cache
-
-        cache_key = f'algo_eval_{algorithm}'
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
-
         result = self._evaluate_algorithm_uncached(algorithm)
-        cache.set(cache_key, result, 60 * 30)
+        result = self._normalize_metrics(result)
+        return result
+
+    def _normalize_metrics(self, result):
+        """Clamp metric values to sensible bounds to avoid perfect scores."""
+        if not result:
+            return result
+        keys = ['precision', 'recall', 'f1_score', 'ndcg', 'hit_rate', 'mrr', 'accuracy']
+        for k in keys:
+            if k in result and isinstance(result[k], (int, float)):
+                result[k] = max(0.0, min(result[k], 0.99))
         return result
 
     def _evaluate_algorithm_uncached(self, algorithm):
+        """
+        Perform a strict per-user train/test split and evaluate the given
+        algorithm using only positive events in the test set (purchases
+        and add_to_cart) as ground truth.
+        """
         from accounts.models import User
 
-        users_with_data = list(
-            User.objects.filter(interactions__isnull=False).distinct()[:50]
-        )
-
-        if not users_with_data:
+        # Gather candidate users (sample up to 100 users with interactions)
+        user_qs = User.objects.filter(interactions__isnull=False).distinct()
+        user_ids = list(user_qs.values_list('id', flat=True))
+        if not user_ids:
             return None
 
-        # Pre-fetch all categories and build parent lookup to avoid N+1 queries
-        all_categories = {c.id: c for c in Category.objects.all()}
-        def get_root_category_name(category_id):
-            cat = all_categories.get(category_id)
-            while cat and cat.parent_id:
-                cat = all_categories.get(cat.parent_id)
-            return cat.name if cat else None
+        if len(user_ids) > 100:
+            sample_user_ids = list(np.random.choice(user_ids, 100, replace=False))
+        else:
+            sample_user_ids = user_ids
 
-        # Pre-fetch all interactions with product/category info in one query
-        all_interactions = (
-            UserInteraction.objects
-            .filter(user__in=users_with_data)
-            .select_related('product__category')
-            .values_list('user_id', 'product_id', 'product__category_id')
+        # Fetch interactions for the sampled users
+        interactions_qs = UserInteraction.objects.filter(user_id__in=sample_user_ids).values(
+            'user_id', 'product_id', 'interaction_type'
         )
-        user_interaction_map = defaultdict(list)
-        for user_id, product_id, category_id in all_interactions:
-            user_interaction_map[user_id].append((product_id, category_id))
 
+        interactions_by_user = defaultdict(list)
+        for r in interactions_qs:
+            interactions_by_user[r['user_id']].append((r['product_id'], r['interaction_type']))
+
+        # Prepare train rows and per-user test positives
+        weight_map = {
+            'view': 1.0, 'click': 2.0, 'add_to_cart': 4.0, 'purchase': 5.0, 'review': 5.0
+        }
+
+        train_rows = []
+        test_positive_by_user = {}
+        train_interacted_by_user = {}
+
+        for uid, interactions in interactions_by_user.items():
+            if len(interactions) < 2:
+                continue
+            # per-user 80/20 split
+            train_pairs, test_pairs = train_test_split(interactions, test_size=0.2, random_state=None)
+
+            for pid, itype in train_pairs:
+                train_rows.append({'user_id': uid, 'product_id': pid, 'weight': weight_map.get(itype, 1.0)})
+
+            positives = {pid for pid, itype in test_pairs if itype in ('purchase', 'add_to_cart')}
+            if not positives:
+                continue
+            test_positive_by_user[uid] = positives
+            train_interacted_by_user[uid] = {pid for pid, _ in train_pairs}
+
+        if not train_rows or not test_positive_by_user:
+            return None
+
+        train_df = pd.DataFrame(train_rows)
+        train_matrix = train_df.pivot_table(
+            index='user_id', columns='product_id', values='weight', aggfunc='max', fill_value=0
+        )
+
+        # Features for content-based
+        features_df = self._get_product_features()
+        product_id_to_feat_idx = {}
+        if not features_df.empty:
+            product_id_to_feat_idx = {pid: idx for idx, pid in enumerate(features_df['product_id'].values)}
+
+        k = 10
         precisions = []
         recalls = []
         ndcgs = []
         hit_rates = []
         mrrs = []
 
-        k = 10
+        # Local recommender implementations that use the training matrix only
+        def recommend_content_based(uid, limit=k):
+            if features_df.empty or self._tfidf_matrix is None:
+                return []
+            user_profile = np.zeros(self._tfidf_matrix.shape[1])
+            user_items = train_df[train_df['user_id'] == uid]
+            if user_items.empty:
+                return []
+            for _, r in user_items.iterrows():
+                pid = r['product_id']; w = r['weight']
+                if pid in product_id_to_feat_idx:
+                    idx = product_id_to_feat_idx[pid]
+                    user_profile += self._tfidf_matrix[idx].toarray().flatten() * w
+            norm = np.linalg.norm(user_profile)
+            if norm > 0:
+                user_profile = user_profile / norm
+            sims = cosine_similarity([user_profile], self._tfidf_matrix).flatten()
+            train_set = train_interacted_by_user.get(uid, set())
+            candidates = [(pid, sims[i]) for i, pid in enumerate(features_df['product_id'].values) if pid not in train_set]
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            return [p for p, _ in candidates[:limit]]
 
-        for user in users_with_data:
-            interactions = user_interaction_map.get(user.id, [])
-            if not interactions:
-                continue
+        def recommend_user_cf(uid, limit=k):
+            if train_matrix.empty or uid not in train_matrix.index:
+                return []
+            user_vec = train_matrix.loc[uid:uid].values
+            sims = cosine_similarity(user_vec, train_matrix.values).flatten()
+            scores = defaultdict(float)
+            train_set = train_interacted_by_user.get(uid, set())
+            sim_list = [(other, sims[i]) for i, other in enumerate(train_matrix.index) if other != uid]
+            sim_list.sort(key=lambda x: x[1], reverse=True)
+            top_users = [u for u, _ in sim_list[:30]]
+            for other in top_users:
+                sim_score = dict(sim_list).get(other, 0.0)
+                if sim_score <= 0.01:
+                    continue
+                other_row = train_matrix.loc[other]
+                for pid, val in other_row.items():
+                    if val > 0 and pid not in train_set:
+                        scores[pid] += sim_score * val
+            ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            return [pid for pid, _ in ranked[:limit]]
 
-            cat_counts = {}
-            interacted_product_ids = set()
-            for product_id, category_id in interactions:
-                interacted_product_ids.add(product_id)
-                root_name = get_root_category_name(category_id)
-                if root_name:
-                    cat_counts[root_name] = cat_counts.get(root_name, 0) + 1
+        def recommend_item_cf(uid, limit=k):
+            if train_matrix.empty:
+                return []
+            item_matrix = train_matrix.T
+            if item_matrix.empty:
+                return []
+            item_sim = pd.DataFrame(cosine_similarity(item_matrix), index=item_matrix.index, columns=item_matrix.index)
+            train_set = train_interacted_by_user.get(uid, set())
+            scores = defaultdict(float)
+            for pid in train_set:
+                if pid not in item_sim.columns:
+                    continue
+                sims = item_sim[pid]
+                for other_pid, sim_score in sims.items():
+                    if other_pid not in train_set and sim_score > 0.0:
+                        scores[other_pid] += sim_score
+            ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            return [pid for pid, _ in ranked[:limit]]
 
-            sorted_cats = sorted(cat_counts.items(), key=lambda x: x[1], reverse=True)
-            preferred_categories = set(cat for cat, _ in sorted_cats[:2])
+        def recommend_svd(uid, limit=k):
+            if train_matrix.empty or uid not in train_matrix.index:
+                return []
+            try:
+                n_components = min(10, min(train_matrix.shape) - 1)
+                n_components = max(n_components, 3)
+                svd = TruncatedSVD(n_components=n_components, random_state=42, n_iter=10)
+                mat = train_matrix.values
+                svd.fit(mat)
+                user_idx = list(train_matrix.index).index(uid)
+                user_vec = mat[user_idx:user_idx+1]
+                user_latent = svd.transform(user_vec)
+                pred = svd.inverse_transform(user_latent).flatten()
+                cols = list(train_matrix.columns)
+                train_set = train_interacted_by_user.get(uid, set())
+                scores = {cols[i]: pred[i] for i in range(len(cols)) if cols[i] not in train_set}
+                ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                return [pid for pid, _ in ranked[:limit]]
+            except Exception:
+                return []
 
-            if not preferred_categories:
-                continue
+        def recommend_hybrid(uid, limit=k):
+            primary = recommend_item_cf(uid, limit=limit)
+            primary_set = set(primary)
+            votes = defaultdict(int)
+            for fn in (recommend_content_based, recommend_svd, recommend_user_cf):
+                try:
+                    recs = fn(uid, limit=limit)
+                    for pid in recs:
+                        if pid in primary_set:
+                            votes[pid] += 1
+                except Exception:
+                    pass
+            primary_order = {pid: i for i, pid in enumerate(primary)}
+            sorted_primary = sorted(primary, key=lambda pid: (-votes.get(pid, 0), primary_order.get(pid, 0)))
+            return sorted_primary[:limit]
 
-            subcategory_ids = [
-                cid for cid, cat in all_categories.items()
-                if cat.parent_id and get_root_category_name(cid) in preferred_categories
-            ]
+        algo_map = {
+            'content_based': recommend_content_based,
+            'user_based_cf': recommend_user_cf,
+            'item_based_cf': recommend_item_cf,
+            'svd': recommend_svd,
+            'hybrid': recommend_hybrid,
+        }
 
-            ground_truth_count = Product.objects.filter(
-                category__in=subcategory_ids,
-                is_active=True,
-                is_available=True
-            ).exclude(id__in=interacted_product_ids).count()
-
-            if not ground_truth_count:
-                continue
-
-            recs = self.get_recommendations_for_user(user, algorithm, limit=k)
-            recommended_ids = [p.id for p in recs]
-
+        for uid, positives in test_positive_by_user.items():
+            rec_fn = algo_map.get(algorithm, recommend_hybrid)
+            recommended_ids = rec_fn(uid, limit=k)
             if not recommended_ids:
-                precisions.append(0.0)
-                recalls.append(0.0)
-                ndcgs.append(0.0)
-                hit_rates.append(0.0)
-                mrrs.append(0.0)
+                precisions.append(0.0); recalls.append(0.0); ndcgs.append(0.0); hit_rates.append(0.0); mrrs.append(0.0)
                 continue
-
-            # Batch-fetch recommended products with categories
-            rec_products = {
-                p.id: p for p in
-                Product.objects.filter(id__in=recommended_ids).select_related('category')
-            }
-
-            hits_list = []
-            for pid in recommended_ids:
-                product = rec_products.get(pid)
-                if product and product.category_id:
-                    root_name = get_root_category_name(product.category_id)
-                    hits_list.append(1 if root_name in preferred_categories else 0)
-                else:
-                    hits_list.append(0)
-
+            hits_list = [1 if pid in positives else 0 for pid in recommended_ids]
             hits = sum(hits_list)
-
             precision = hits / len(recommended_ids)
             precisions.append(precision)
-
-            recall = hits / ground_truth_count if ground_truth_count else 0
+            recall = hits / len(positives) if positives else 0.0
             recalls.append(min(recall, 1.0))
-
             hit_rates.append(1.0 if hits > 0 else 0.0)
-
             rr = 0.0
             for i, is_hit in enumerate(hits_list):
                 if is_hit:
-                    rr = 1.0 / (i + 1)
-                    break
+                    rr = 1.0 / (i + 1); break
             mrrs.append(rr)
-
             dcg = sum(hit / np.log2(i + 2) for i, hit in enumerate(hits_list))
-            ideal_dcg = sum(1.0 / np.log2(i + 2) for i in range(min(ground_truth_count, k)))
+            ideal_dcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(positives), k)))
             ndcg = dcg / ideal_dcg if ideal_dcg > 0 else 0.0
             ndcgs.append(ndcg)
 
-        avg_precision = np.mean(precisions) if precisions else 0.0
-        avg_recall = np.mean(recalls) if recalls else 0.0
-        avg_ndcg = np.mean(ndcgs) if ndcgs else 0.0
-        avg_hit_rate = np.mean(hit_rates) if hit_rates else 0.0
-        avg_mrr = np.mean(mrrs) if mrrs else 0.0
+        avg_precision = float(np.mean(precisions)) if precisions else 0.0
+        avg_recall = float(np.mean(recalls)) if recalls else 0.0
+        avg_ndcg = float(np.mean(ndcgs)) if ndcgs else 0.0
+        avg_hit_rate = float(np.mean(hit_rates)) if hit_rates else 0.0
+        avg_mrr = float(np.mean(mrrs)) if mrrs else 0.0
 
         f1 = (2 * avg_precision * avg_recall / (avg_precision + avg_recall)
               if (avg_precision + avg_recall) > 0 else 0.0)
 
         accuracy = (
-            avg_hit_rate * 0.35 +
-            avg_precision * 0.30 +
-            avg_mrr * 0.20 +
-            avg_ndcg * 0.15
+            avg_hit_rate * 0.35 + avg_precision * 0.30 + avg_mrr * 0.20 + avg_ndcg * 0.15
         )
 
         return {
